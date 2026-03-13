@@ -19,11 +19,18 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 
+// Request logger — placed before routes so all requests are logged
+app.use((req, res, next) => {
+  console.log("Request received:", req.method, req.path);
+  next();
+});
+
 // TURN credentials endpoint — fetches ICE servers from Metered.ca
 app.get("/api/turn-credentials", async (req, res) => {
   try {
     const apiKey = process.env.METERED_API_KEY;
     if (!apiKey) {
+      console.warn("METERED_API_KEY not set, returning fallback STUN/TURN servers");
       // Fallback: return free public STUN + TURN servers
       return res.json([
         { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
@@ -32,10 +39,18 @@ app.get("/api/turn-credentials", async (req, res) => {
         { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
       ]);
     }
+    const meteredDomain = process.env.METERED_DOMAIN || "vi-meet.metered.live";
+    console.log(`Fetching TURN credentials from Metered: ${meteredDomain}`);
     const response = await axios.get(
-      `https://${process.env.METERED_DOMAIN || "vi-meet.metered.live"}/api/v1/turn/credentials?apiKey=${apiKey}`
+      `https://${meteredDomain}/api/v1/turn/credentials?apiKey=${apiKey}`
     );
-    res.json(response.data);
+    // Prepend STUN servers to the Metered response for broader NAT traversal
+    const iceServers = [
+      { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+      ...response.data,
+    ];
+    console.log(`Returning ${iceServers.length} ICE servers`);
+    res.json(iceServers);
   } catch (error) {
     console.error("Error fetching TURN credentials:", error.message);
     // Fallback to free public servers on error
@@ -48,16 +63,12 @@ app.get("/api/turn-credentials", async (req, res) => {
   }
 });
 
+// Static file serving and catch-all MUST come AFTER API routes
+// Otherwise the catch-all intercepts /api/* requests
 app.use(express.static(path.resolve(__dirname, "../client")));
 
 app.get(/.*/, (req, res) => {
   res.sendFile(path.resolve(__dirname, "../client", "index.html"));
-});
-
-
-app.use((req, res, next) => {
-  console.log("Request received:", req.path);
-  next();
 });
 
 
